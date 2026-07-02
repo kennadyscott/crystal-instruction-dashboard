@@ -3,7 +3,7 @@
 A clickable prototype of a redesigned teacher Home dashboard for Crystal Instruction.
 
 ## 👉 Open the live prototype
-**https://kennadyscott.github.io/crystal-instruction-dashboard/**
+**https://raw.githack.com/kennadyscott/crystal-instruction-dashboard/main/index.html**
 
 Click through it — the next-step buttons, subject tabs, "More options," Attach to T-TESS, quick notes, and Launch ClassCade are all interactive.
 
