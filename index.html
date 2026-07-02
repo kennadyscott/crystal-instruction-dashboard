@@ -1,0 +1,716 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crystal Instruction — Teacher Dashboard (Prototype v2)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600&family=Poppins:wght@500;600;700&family=Nunito:wght@400;600;700;800&display=swap" rel="stylesheet">
+<!-- Brand note for devs (matched to crystalinstruction.com):
+     Fonts — logo wordmark = rounded face (Fredoka stand-in); headings = Poppins (geometric bold);
+     body = Nunito. Swap in the licensed faces if they differ.
+     Palette — brand fuchsia #e11fc4, secondary purple #8b30d8 (magenta→purple gradients on CTAs/hero),
+     heading navy-black #14213d, "Instruction" charcoal #3d3d3d.
+     Status mirrors the site's own tiers: green = proficient/on-track, amber = targeted/approaching,
+     rose = intensive/below. -->
+
+
+<!--
+  CRYSTAL INSTRUCTION — TEACHER DASHBOARD REDESIGN (PROTOTYPE v2)
+  ==============================================================
+  Goal: turn the Home dashboard from a "rear-view mirror" (usage stats + product
+  news) into a "next-action" screen that tells a teacher what to do next AND shows
+  the data behind it.
+
+  This is a front-end prototype for developer handoff. Everything is driven by the
+  DATA object near the bottom; the rendering + business logic is intentionally
+  readable so it ports cleanly to the real backend.
+
+  STRUCTURE (top to bottom)
+  -------------------------
+  1. Getting Started card — shows UNTIL the teacher has watched the intro video
+     (state flag `state.watchedIntro`; wire to a per-user "intro_watched" field).
+  2. Subject TABS — teacher toggles ONE subject at a time (Math / ELA / Science /
+     Writing). Each tab shows a status dot: red = has gaps, amber = stuck lesson,
+     green = all on track — so at-a-glance triage survives even though only one
+     subject is displayed.
+  3. Subject OVERVIEW — 3 data tiles for the selected subject (class mastery +
+     trend sparkline, students below mastery, lessons needing action).
+  4. "Do this next" — RANKED rich cards (worst mastery first) for that subject.
+     Each card shows: rank, class, when, exit-ticket mastery, the skill missed,
+     a student-distribution bar, the checkpoint -> exit-ticket read (retention vs
+     never-got-it), and a primary next step + alternatives.
+  5. On-track lessons — collapsed reassurance.
+
+  NEXT-STEP LOGIC — deriveAction(gap): mastery is the EXIT-TICKET %.
+     mastery >= ON_TRACK(85)         -> move on
+     stuck (retaught >=2x, no gain)  -> switch approach (ClassCade / new Snap)
+     %below > WHOLE_CLASS(60)        -> whole-class reteach
+     otherwise                        -> small group of the students who missed it
+
+  BACKEND WORK STILL REQUIRED
+  ---------------------------
+  - Tag each exit ticket to a specific skill/standard (the diagnosis line).
+  - Map a skill -> ONE recommended resource (Snap Lesson / ClearSheet / ClassCade).
+  - "Small group" should create a real group from the students who missed it.
+-->
+
+<style>
+  :root {
+    --brand:   #e11fc4;   /* Crystal vivid fuchsia — brand + primary actions */
+    --brand-d: #c2179f;
+    --brand-2: #8b30d8;   /* secondary purple (gradients) */
+    --accent:  #e11fc4;
+    --accent-d:#c2179f;
+    --navy:    #14213d;   /* headings (near-black navy, per site) */
+    --charcoal:#3d3d3d;   /* logo "Instruction" */
+    --ink:     #34343c;   /* body text */
+    --ink-2:   #5f5e66;
+    --ink-3:   #8b8a92;
+    --line:    #ece7ee;
+    --line-2:  #ddd5e0;
+    --page:    #faf7fb;
+    --card:    #ffffff;
+    --radius:  14px;
+
+    --danger:  #e23e57; --danger-bg:#fdecef; --danger-line:#f5c2cc;   /* rose */
+    --warning: #9a6100; --warning-bg:#fbf1da; --warning-line:#eecf92; /* amber */
+    --success: #16964f; --success-bg:#e6f7ee; --success-line:#b6e6cc; /* green */
+
+    --mastered:   #1fae63;   /* green — proficient */
+    --approaching:#f0a41a;   /* amber — targeted */
+    --below:      #ef4b64;   /* rose — intensive */
+
+    --font:         'Nunito', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-display: 'Poppins', 'Nunito', sans-serif;
+    --font-logo:    'Fredoka', 'Poppins', sans-serif;
+  }
+  /* Geometric-bold headings (Poppins) on the heading moments; rounded face on the logo */
+  .greet, .sec-head h2, .empty .big, .modal-title, .tile .t-value { font-family: var(--font-display); }
+  .logo .name { font-family: var(--font-logo); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { font-family: var(--font); color: var(--ink); background: var(--page); font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased; }
+  .app { display: flex; min-height: 100vh; }
+
+  /* -------- SIDEBAR -------- */
+  .sidebar { width: 228px; flex-shrink: 0; background: var(--card); border-right: 1px solid var(--line); padding: 20px 14px; display: flex; flex-direction: column; }
+  .logo { display: flex; align-items: center; gap: 9px; padding: 0 8px 22px; }
+  .logo .mark { width: 26px; height: 26px; }
+  .logo .name { font-weight: 700; font-size: 17px; line-height: 1.05; letter-spacing: -.2px; }
+  .logo .name span { color: var(--brand); display: block; }
+  .logo .name em { color: var(--charcoal); font-style: normal; font-weight: 600; font-size: 15px; display: block; }
+  .nav { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+  .nav a { display: flex; align-items: center; gap: 11px; padding: 9px 12px; border-radius: 10px; color: var(--ink-2); text-decoration: none; font-size: 14px; font-weight: 500; }
+  .nav a:hover { background: var(--page); color: var(--ink); }
+  .nav a.active { background: var(--navy); color: #fff; }
+  .nav svg { width: 18px; height: 18px; }
+  .user { margin-top: auto; padding: 12px 8px 0; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 10px; }
+  .avatar { width: 34px; height: 34px; border-radius: 50%; background: #f0e3ee; color: var(--brand); display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; }
+  .user .u-name { font-size: 13px; font-weight: 600; line-height: 1.2; }
+  .user .u-role { font-size: 12px; color: var(--ink-3); }
+
+  /* -------- MAIN -------- */
+  .main { flex: 1; min-width: 0; padding: 24px 32px 40px; max-width: 1180px; }
+  .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 18px; flex-wrap: wrap; }
+  .greet { font-size: 22px; font-weight: 600; letter-spacing: -.3px; color: var(--navy); }
+  .date { color: var(--ink-3); font-size: 14px; white-space: nowrap; }
+  .topbar-right { display: flex; align-items: center; gap: 16px; }
+  /* ClassCade quick-launch — opens the live in-class toolbar in a new tab (wire href to the real toolbar URL) */
+  .cc-launch { display: inline-flex; align-items: center; gap: 8px; text-decoration: none; font-size: 14px; font-weight: 700; color: var(--brand-d); background: #fbeaf6; border: 1px solid #f2cde7; padding: 9px 16px; border-radius: 999px; }
+  .cc-launch:hover { background: #f7d8ef; border-color: #ecb7dd; }
+  .cc-launch .cc-ic svg { width: 18px; height: 18px; }
+  .cc-launch .cc-ext svg { width: 14px; height: 14px; color: var(--brand); }
+
+  /* -------- GETTING STARTED -------- */
+  .getting-started { display: flex; gap: 18px; align-items: center; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 20px; }
+  .gs-thumb { position: relative; width: 148px; height: 84px; border-radius: 9px; flex-shrink: 0; background: linear-gradient(135deg, #fbe4f5, #f3e9fb); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+  .gs-thumb .play { background: var(--brand); }
+  .gs-thumb .play { width: 40px; height: 40px; border-radius: 50%; background: var(--accent); display: flex; align-items: center; justify-content: center; }
+  .gs-thumb .play svg { width: 16px; height: 16px; margin-left: 2px; }
+  .gs-body { flex: 1; }
+  .gs-body h3 { margin: 0 0 3px; font-size: 15px; font-weight: 700; }
+  .gs-body p { margin: 0 0 10px; font-size: 13px; color: var(--ink-2); }
+  .gs-note { font-size: 12px; color: var(--ink-3); }
+  .gs-actions { display: flex; gap: 8px; }
+
+  /* -------- SUBJECT TABS -------- */
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 20px; }
+  .tab { display: flex; align-items: center; gap: 8px; padding: 10px 16px 12px; border: none; background: none; font-family: var(--font); font-size: 14px; font-weight: 600; color: var(--ink-3); cursor: pointer; border-bottom: 2.5px solid transparent; margin-bottom: -1px; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--ink); border-bottom-color: var(--accent); }
+  .tab .sdot { width: 8px; height: 8px; border-radius: 50%; }
+  .sdot.gap { background: var(--danger); } .sdot.watch { background: var(--warning); } .sdot.ontrack { background: var(--mastered); }
+
+  /* -------- OVERVIEW BAR (slim) -------- */
+  .overview { display: flex; align-items: center; gap: 20px; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 11px 18px; margin-bottom: 18px; flex-wrap: wrap; }
+  .ov-stat { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); }
+  .ov-stat b { font-family: var(--font-display); font-size: 19px; font-weight: 600; color: var(--navy); line-height: 1; }
+  .ov-sep { width: 1px; height: 24px; background: var(--line); }
+
+  /* -------- SECTION HEADS -------- */
+  .sec-head { display: flex; align-items: baseline; gap: 10px; margin: 4px 0 12px; }
+  .sec-head h2 { font-size: 16px; font-weight: 600; margin: 0; color: var(--navy); }
+  .sec-head .count { font-size: 13px; color: var(--ink-3); }
+
+  /* -------- GAP CARDS -------- */
+  .cards { display: flex; flex-direction: column; gap: 12px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px; display: flex; gap: 15px; }
+  .card.gap { border-left: 4px solid var(--danger); }
+  .card.watch { border-left: 4px solid var(--warning); }
+  .rank { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; background: var(--page); border: 1px solid var(--line-2); color: var(--ink-2); font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .card-main { flex: 1; min-width: 0; }
+  .meta-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+  .meta-left { display: flex; align-items: center; gap: 9px; font-size: 12.5px; color: var(--ink-3); }
+  .chip { font-size: 12px; font-weight: 600; padding: 1px 9px; border-radius: 999px; }
+  .chip.math { background: #e6f0fc; color: #2258bd; }
+  .chip.ela { background: #efeafb; color: #6a4fc0; }
+  .chip.science { background: #e4f5ee; color: var(--success); }
+  .chip.writing { background: #fbf1db; color: var(--warning); }
+  .pill { font-size: 12px; font-weight: 700; padding: 3px 11px; border-radius: 999px; white-space: nowrap; }
+  .pill.gap { background: var(--danger-bg); color: var(--danger); }
+  .pill.watch { background: var(--warning-bg); color: var(--warning); }
+  .pill.ontrack { background: var(--success-bg); color: var(--success); }
+  .lesson { font-size: 16px; font-weight: 700; margin: 2px 0 5px; letter-spacing: -.2px; color: var(--navy); }
+  .diagnosis { font-size: 13.5px; color: var(--ink-2); margin: 0 0 12px; }
+  .diagnosis b { color: var(--ink); font-weight: 600; }
+
+  /* distribution donut */
+  .dist { display: flex; align-items: center; gap: 14px; margin: 2px 0 12px; }
+  .dist svg { flex-shrink: 0; }
+  .donut-num { font-family: var(--font-display); font-size: 16px; font-weight: 600; fill: var(--navy); }
+  .donut-lbl { font-size: 7.5px; fill: var(--ink-3); font-weight: 700; letter-spacing: .3px; }
+  .dist-legend { display: flex; flex-flow: row wrap; gap: 6px 16px; }
+  .dist-legend span { font-size: 12.5px; color: var(--ink-2); display: flex; align-items: center; }
+  .dist-legend b { color: var(--navy); font-weight: 700; margin-right: 4px; font-family: var(--font-display); }
+  .dist-legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 6px; flex-shrink: 0; }
+
+  /* checkpoint -> exit read */
+  .cp-read { display: flex; align-items: center; gap: 10px; font-size: 13px; color: var(--ink-2); margin: 0 0 14px; flex-wrap: wrap; }
+  .cp-read b { color: var(--navy); font-weight: 700; }
+  .cp-arrow { display: inline-flex; color: var(--ink-3); }
+  .cp-tag { font-size: 11.5px; font-weight: 700; padding: 2px 10px; border-radius: 999px; }
+  .cp-tag.retention { background: var(--warning-bg); color: var(--warning); }
+  .cp-tag.never { background: var(--danger-bg); color: var(--danger); }
+  .cp-tag.consistent { background: var(--success-bg); color: var(--success); }
+
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  button { font-family: var(--font); cursor: pointer; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 18px; border-radius: 999px; font-size: 13.5px; font-weight: 700; border: 1.5px solid var(--line-2); background: #fff; color: var(--ink); }
+  .btn:hover { border-color: var(--ink-3); }
+  .btn svg { width: 16px; height: 16px; }
+  .btn.primary { background: linear-gradient(92deg, var(--brand) 10%, var(--brand-2) 130%); border: none; color: #fff; box-shadow: 0 4px 14px rgba(225,31,196,.26); }
+  .btn.primary:hover { background: linear-gradient(92deg, var(--brand-d) 10%, #7a26c2 130%); box-shadow: 0 5px 18px rgba(225,31,196,.34); }
+  .btn.done { background: var(--success-bg); border: 1.5px solid var(--success-line); color: var(--success); cursor: default; box-shadow: none; }
+
+  /* on-track list + empty state */
+  .ontrack-list { border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; margin-top: 8px; }
+  .ot-row { display: flex; align-items: center; justify-content: space-between; padding: 11px 16px; background: var(--card); font-size: 14px; }
+  .ot-row + .ot-row { border-top: 1px solid var(--line); }
+  .ot-row .ot-when { font-size: 12px; color: var(--ink-3); margin-left: 8px; font-weight: 400; }
+  .empty { text-align: center; padding: 30px 20px; color: var(--ink-2); }
+  .empty .big { font-size: 15px; font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+
+  .footer { display: flex; align-items: center; justify-content: space-between; margin-top: 26px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 13px; color: var(--ink-3); }
+  .footer a { color: var(--accent); text-decoration: none; font-weight: 600; }
+  .footer a:hover { text-decoration: underline; }
+
+  /* -------- MODAL -------- */
+  .overlay { position: fixed; inset: 0; background: rgba(22,15,30,.42); display: none; align-items: center; justify-content: center; padding: 20px; z-index: 50; }
+  .overlay.open { display: flex; }
+  .modal { background: #fff; border-radius: 16px; width: 100%; max-width: 470px; box-shadow: 0 14px 50px rgba(20,10,30,.26); overflow: hidden; }
+  .modal-head { padding: 20px 22px 14px; border-bottom: 1px solid var(--line); }
+  .modal-head .row { display: flex; align-items: flex-start; justify-content: space-between; }
+  .modal-eyebrow { font-size: 12px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase; color: var(--accent); margin: 0 0 6px; }
+  .modal-title { font-size: 18px; font-weight: 700; margin: 0; letter-spacing: -.2px; }
+  .modal-body { padding: 18px 22px; }
+  .modal-body p { margin: 0 0 14px; color: var(--ink-2); font-size: 14px; }
+  .roster { display: flex; flex-wrap: wrap; gap: 7px; margin: 0 0 16px; }
+  .rchip { font-size: 13px; padding: 5px 11px; border-radius: 999px; background: #fbeaf6; color: var(--brand-d); font-weight: 600; }
+  .resource-box { display: flex; align-items: center; gap: 12px; background: var(--page); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .resource-box .ric { width: 38px; height: 38px; border-radius: 9px; background: #fff; border: 1px solid var(--line); display: flex; align-items: center; justify-content: center; color: var(--accent); }
+  .resource-box .rtitle { font-weight: 600; font-size: 14px; }
+  .resource-box .rmeta { font-size: 12.5px; color: var(--ink-3); }
+  .modal-foot { padding: 14px 22px 20px; display: flex; gap: 10px; }
+  .modal-foot .btn { flex: 1; }
+  .x-btn { background: none; border: none; color: var(--ink-3); font-size: 22px; line-height: 1; cursor: pointer; }
+
+  /* -------- TWO-COLUMN LAYOUT + RIGHT RAIL -------- */
+  .layout { display: flex; gap: 22px; align-items: flex-start; }
+  .col-main { flex: 1; min-width: 0; }
+  .rail { width: 312px; flex-shrink: 0; display: flex; flex-direction: column; gap: 14px; }
+  @media (max-width: 1040px) { .layout { flex-direction: column; } .rail { width: 100%; } }
+
+  /* compact data strip inside cards */
+  .data-strip { display: flex; align-items: center; gap: 13px; background: var(--page); border-radius: 10px; padding: 9px 13px; margin: 0 0 14px; flex-wrap: wrap; }
+  .data-strip svg { flex-shrink: 0; }
+  .mini-num { font-family: var(--font-display); font-size: 12px; font-weight: 600; fill: var(--navy); }
+  .ds-text { font-size: 13px; color: var(--ink-2); line-height: 1.5; }
+  .ds-text b { color: var(--navy); font-weight: 700; }
+  .ds-sep { color: var(--ink-3); margin: 0 4px; }
+
+  /* action hero — the clear next step */
+  .next-step { border: 1.5px dashed var(--border-accent, #f0c0e6); background: #fdf3fb; border-radius: 12px; padding: 12px 14px; }
+  .ns-label { font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--brand-d); margin-bottom: 9px; display: flex; align-items: center; gap: 6px; }
+  .ns-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .btn.big { font-size: 14.5px; padding: 12px 22px; }
+  .more-toggle { background: none; border: none; color: var(--ink-2); font-size: 13px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; gap: 4px; padding: 6px; }
+  .more-toggle:hover { color: var(--navy); }
+  .alts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .alts[hidden] { display: none; }
+  .ns-label svg { width: 14px; height: 14px; }
+  .more-toggle svg { width: 15px; height: 15px; }
+
+  /* -------- RAIL WIDGETS -------- */
+  .rail-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 15px 16px; }
+  .rail-card h3 { font-family: var(--font-display); font-size: 13.5px; font-weight: 600; color: var(--navy); margin: 0 0 12px; display: flex; align-items: center; justify-content: space-between; }
+  .rail-card h3 .tag { font-size: 10.5px; font-weight: 700; color: var(--brand-d); background: #fbeaf6; padding: 2px 8px; border-radius: 999px; letter-spacing: .2px; }
+
+  .quote-card { background: linear-gradient(135deg, #fbe9f6, #eee6fb); border: none; }
+  .quote-card .qmark { font-family: var(--font-display); font-size: 30px; line-height: .6; color: var(--brand); }
+  .quote-card p { font-size: 14px; color: var(--navy); line-height: 1.5; margin: 6px 0 12px; font-weight: 600; }
+  .quote-card .qrefresh { background: rgba(255,255,255,.7); border: none; color: var(--brand-d); font-size: 12px; font-weight: 700; padding: 6px 12px; border-radius: 999px; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; }
+  .quote-card .qrefresh:hover { background: #fff; }
+
+  .notes-list { display: flex; flex-direction: column; gap: 7px; margin-bottom: 10px; }
+  .note-item { display: flex; align-items: flex-start; gap: 8px; font-size: 13px; color: var(--ink); background: var(--page); border-radius: 8px; padding: 8px 10px; line-height: 1.4; }
+  .note-item .ndot { color: var(--brand); flex-shrink: 0; }
+  .note-item button { margin-left: auto; background: none; border: none; color: var(--ink-3); cursor: pointer; font-size: 15px; line-height: 1; flex-shrink: 0; }
+  #note-input { width: 100%; font-size: 13px; padding: 9px 11px; border: 1px solid var(--line-2); border-radius: 9px; font-family: var(--font); }
+  #note-input:focus { outline: none; border-color: var(--brand); }
+  .notes-empty { font-size: 12.5px; color: var(--ink-3); margin-bottom: 10px; }
+
+  .assign-item { padding: 10px 0; border-top: 1px solid var(--line); }
+  .assign-item:first-of-type { border-top: none; padding-top: 0; }
+  .assign-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .assign-title { font-size: 13px; font-weight: 700; color: var(--navy); }
+  .assign-sub { font-size: 11.5px; color: var(--ink-3); }
+  .assign-acc { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; white-space: nowrap; }
+  .abar { height: 7px; border-radius: 4px; background: var(--page); overflow: hidden; }
+  .abar span { display: block; height: 100%; background: var(--brand); border-radius: 4px; }
+  .assign-meta { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--ink-3); margin-top: 5px; }
+  .rail-link { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ink); text-decoration: none; padding: 9px 0; }
+  .rail-link:hover { color: var(--brand-d); }
+  .rail-link + .rail-link { border-top: 1px solid var(--line); }
+  .rail-link .li { width: 30px; height: 30px; border-radius: 8px; background: #fbeaf6; color: var(--brand); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .rail-link .arr { margin-left: auto; color: var(--ink-3); }
+  .rail-link.done .li { background: var(--success-bg); color: var(--success); }
+  .rail-link .li svg { width: 16px; height: 16px; }
+  .rail-link .arr svg { width: 15px; height: 15px; }
+  .note-item .ndot svg { width: 15px; height: 15px; display: block; }
+  .qrefresh svg { width: 14px; height: 14px; }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar">
+    <div class="logo">
+      <svg class="mark" viewBox="0 0 24 24" fill="none"><path d="M12 1.5 21 9l-9 13.5L3 9z" fill="#c21c93"/><path d="M12 1.5 21 9l-9 13.5z" fill="#e0559a"/></svg>
+      <div class="name"><span>Crystal</span><em>Instruction</em></div>
+    </div>
+    <ul class="nav">
+      <li><a href="#" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 10 12 3l9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1z"/></svg>Home</a></li>
+      <li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="9" cy="8" r="3"/><path d="M3 20a6 6 0 0 1 12 0M16 5.5a3 3 0 0 1 0 5.5M21 20a5 5 0 0 0-4-4.9"/></svg>Class Manager</a></li>
+      <li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>ClearSheets</a></li>
+      <li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 4h18M4 4v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4M9 20l3-4 3 4"/></svg>ClearLessons</a></li>
+      <li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="10" rx="3"/><path d="M7 12h3M8.5 10.5v3M15 11h.01M17.5 13h.01"/></svg>ClassCade Showdown</a></li>
+      <li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 9V5a2 2 0 0 1 2-2h1v6M16 9V5a2 2 0 0 0-2-2h-1v6M6 9h12v3a6 6 0 0 1-12 0zM12 18v3"/></svg>Curriculum Connect</a></li>
+      <li><a href="#"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Crystal Reports</a></li>
+    </ul>
+    <div class="user"><div class="avatar">DN</div><div><div class="u-name">Dirk Nowitski</div><div class="u-role">Teacher · Dallas Mavs Elem.</div></div></div>
+  </aside>
+
+  <!-- MAIN -->
+  <main class="main">
+    <div class="topbar">
+      <div class="greet">Good morning, Dirk</div>
+      <div class="topbar-right">
+        <a class="cc-launch" href="https://cs.cleark12.com/teacher/classcadeshowdown/" target="_blank" rel="noopener">
+          <span class="cc-ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="2" y="7" width="20" height="10" rx="3.5"/><path d="M6 12h3M7.5 10.5v3M15 11.5h.01M18 13h.01"/></svg></span>
+          Launch ClassCade
+          <span class="cc-ext"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></span>
+        </a>
+        <span class="date">Thursday, July 2</span>
+      </div>
+    </div>
+
+    <div id="getting-started"></div>
+
+    <div class="layout">
+      <div class="col-main">
+        <div class="tabs" id="tabs"></div>
+        <div class="overview" id="overview"></div>
+        <div id="subject-body"></div>
+      </div>
+      <aside class="rail" id="rail"></aside>
+    </div>
+
+    <div class="footer">
+      <span>51.9 hrs taught this week · <b style="color:var(--success)">4 gaps closed</b></span>
+      <a href="#">✦ What's new — Snap Lessons ›</a>
+    </div>
+  </main>
+</div>
+
+<!-- MODAL -->
+<div class="overlay" id="overlay">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="m-title">
+    <div class="modal-head"><div class="row"><div><p class="modal-eyebrow" id="m-eyebrow"></p><h3 class="modal-title" id="m-title"></h3></div><button class="x-btn" onclick="closeModal()" aria-label="Close">&times;</button></div></div>
+    <div class="modal-body"><p id="m-desc"></p><div class="roster" id="m-roster"></div><div class="resource-box" id="m-resource"></div></div>
+    <div class="modal-foot"><button class="btn" onclick="closeModal()">Cancel</button><button class="btn primary" id="m-confirm">Assign</button></div>
+  </div>
+</div>
+
+<script>
+/* ---------------- ICONS ---------------- */
+const ICON = {
+  group:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="8" cy="9" r="2.5"/><circle cx="16" cy="9" r="2.5"/><path d="M3.5 19a4.5 4.5 0 0 1 9 0M11.5 19a4.5 4.5 0 0 1 9 0"/></svg>',
+  reteach: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8M20 4v4h-4M20 12a8 8 0 0 1-13.7 5.6L4 16M4 20v-4h4"/></svg>',
+  game:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="2" y="7" width="20" height="10" rx="3.5"/><path d="M6 12h3M7.5 10.5v3M15 11.5h.01M18 13h.01"/></svg>',
+  next:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M5 12h14M13 6l6 6-6 6"/></svg>',
+  check:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M5 12.5 10 17l9-10"/></svg>',
+  bolt:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M13 3 4 14h7l-1 7 9-11h-7z"/></svg>',
+  sheet:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><rect x="5" y="3" width="14" height="18" rx="2"/><path d="M9 8h6M9 12h6M9 16h4"/></svg>',
+  bulb:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 1 4 10.5c-.6.5-1 1.2-1 2H9c0-.8-.4-1.5-1-2A6 6 0 0 1 12 3z"/></svg>',
+  play:    '<svg viewBox="0 0 24 24" fill="#fff"><path d="M6 4l14 8-14 8z"/></svg>',
+  chevron: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>',
+  external:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>',
+  book:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 5a2 2 0 0 1 2-2h13v16H6a2 2 0 0 0-2 2zM19 3v18"/></svg>',
+  badge:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3l2.2 1.6 2.7-.2 1 2.5 2.3 1.4-.6 2.7.6 2.7-2.3 1.4-1 2.5-2.7-.2L12 21l-2.2-1.6-2.7.2-1-2.5-2.3-1.4.6-2.7-.6-2.7 2.3-1.4 1-2.5 2.7.2z"/><path d="M9 12l2 2 4-4"/></svg>',
+  refresh: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8M20 4v4h-4"/></svg>',
+  note:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 4h16v12l-4 4H4zM16 20v-4h4"/></svg>',
+};
+
+/* ---------------- DATA (per subject) ---------------- */
+const CLASS_SIZE = 18;
+const DATA = {
+  math: {
+    label: 'Math', chip: 'math',
+    overview: { mastery: 62, trend: [55,58,54,62], below: 13, needAction: 2, totalLessons: 5 },
+    gaps: [
+      { lesson: 'Represent Multiplication Facts', className: 'Verret Class', when: 'exit ticket, yesterday',
+        mastery: 56, checkpoint: 78, skill: 'equal groups → arrays',
+        dist: { mastered: 10, approaching: 0, below: 8 },
+        missed: ['Aisha','Marcus','Leo','Priya','Devon','Sam','Nina','Cole'],
+        resource: { type: 'Snap Lesson', title: 'Equal Groups to Arrays', meta: '6 min · targeted reteach', icon: 'bolt' },
+        alts: [ {label:'Snap Lesson', icon:'bolt'}, {label:'ClearSheet', icon:'sheet'} ] },
+      { lesson: 'One Step Multiplication Word Problems', className: 'Montagne Mavericks', when: 'stuck · retaught 4×',
+        mastery: 67, checkpoint: 70, skill: 'choosing the operation', stuck: true, retaught: 4,
+        dist: { mastered: 12, approaching: 1, below: 5 },
+        missed: ['Jae','Wren','Ivy','Beau','Sol'],
+        resource: { type: 'ClassCade round', title: 'Word Problem Showdown', meta: 'game-based · same 5 students', icon: 'game' },
+        alts: [ {label:'Different Snap Lesson', icon:'bulb'} ] },
+    ],
+    onTrack: [ {lesson:'Represent Multiplication Facts', className:'Verret Class', mastery:100, when:'Jun 25'}, {lesson:'Arrays and Skip Counting', className:'Cami Test', mastery:88, when:'Jun 30'} ],
+  },
+  ela: {
+    label: 'ELA', chip: 'ela',
+    overview: { mastery: 41, trend: [58,52,47,41], below: 15, needAction: 2, totalLessons: 4 },
+    gaps: [
+      { lesson: 'Cite Text Evidence', className: 'Verret Class', when: 'exit ticket, Wednesday',
+        mastery: 28, checkpoint: 40, skill: 'citing evidence that supports a claim',
+        dist: { mastered: 5, approaching: 0, below: 13 },
+        missed: null, missedCount: 13,
+        resource: { type: 'ClearLesson', title: 'Text Evidence (full reteach)', meta: 'whole-class lesson', icon: 'reteach' },
+        alts: [] },
+      { lesson: 'Main Idea and Supporting Details', className: 'Verret Class', when: 'exit ticket, Tuesday',
+        mastery: 50, checkpoint: 65, skill: 'identifying the central idea',
+        dist: { mastered: 9, approaching: 3, below: 6 },
+        missed: ['Aisha','Priya','Cole','Tess','Owen','Mila'],
+        note: '3 of these 6 are also below in Math — consider one combined group.',
+        resource: { type: 'Snap Lesson', title: 'Details vs. Central Idea', meta: '5 min · targeted reteach', icon: 'bolt' },
+        alts: [ {label:'ClearSheet', icon:'sheet'} ] },
+    ],
+    onTrack: [ {lesson:'Text Structure', className:'Verret Class', mastery:90, when:'Jun 26'} ],
+  },
+  science: {
+    label: 'Science', chip: 'science',
+    overview: { mastery: 91, trend: [82,86,89,91], below: 2, needAction: 0, totalLessons: 3 },
+    gaps: [],
+    onTrack: [ {lesson:'Landforms', className:'Verret Class', mastery:91, when:'Jun 24'}, {lesson:'Weathering and Erosion', className:'Verret Class', mastery:94, when:'Jun 19'} ],
+    next: { lesson:'Rapid vs. Slow Changes', meta:'up next in sequence' },
+  },
+  writing: {
+    label: 'Writing', chip: 'writing',
+    overview: { mastery: 67, trend: [64,66,65,67], below: 5, needAction: 1, totalLessons: 3 },
+    gaps: [
+      { lesson: 'Complete Sentences', className: 'Verret Class', when: 'stuck · retaught 3×',
+        mastery: 67, checkpoint: 69, skill: 'subject–predicate agreement', stuck: true, retaught: 3,
+        dist: { mastered: 12, approaching: 1, below: 5 },
+        missed: ['Riley','Jordan','Tess','Owen','Mia'],
+        resource: { type: 'ClassCade round', title: 'Sentence Showdown', meta: 'game-based · same 5 students', icon: 'game' },
+        alts: [ {label:'Different Snap Lesson', icon:'bulb'} ] },
+    ],
+    onTrack: [ {lesson:'Capitalization', className:'Verret Class', mastery:92, when:'Jun 27'} ],
+  },
+};
+const TAB_ORDER = ['math','ela','science','writing'];
+
+/* ---- RAIL DATA ---- */
+/* ClearSheets practice in flight (this is the ClearSheets / Clear Monitor data). */
+const ASSIGNMENTS = [
+  { title: 'Equal Groups → Arrays', subject: 'Math',    done: 12, total: 18, accuracy: 74, due: 'due Fri' },
+  { title: 'Main Idea practice set', subject: 'ELA',     done: 15, total: 18, accuracy: 81, due: 'due today' },
+  { title: 'Complete Sentences',    subject: 'Writing',  done: 6,  total: 18, accuracy: null, due: 'just assigned' },
+];
+const QUOTES = [
+  'You don’t have to reach every student today. One small group is a real win.',
+  'Responding to the data you have beats chasing the data you don’t.',
+  'Small, consistent adjustments compound. You’re doing the work that matters.',
+  'The best intervention is the one that actually happens. Keep it simple.',
+  'Progress over perfect. Pick one gap and close it.',
+];
+let quoteIdx = 0;
+let NOTES = ['Regroup Verret math table before Thursday’s reteach'];
+
+/* ---------------- LOGIC ---------------- */
+const ON_TRACK = 85, WHOLE_CLASS = 60;
+function belowCount(g){ return g.missed ? g.missed.length : (g.missedCount || g.dist.below); }
+function deriveAction(g){
+  const missed = belowCount(g);
+  const pctBelow = Math.round((g.dist.below / CLASS_SIZE) * 100);
+  if (g.stuck) return { kind:'stuck', status:'watch', pill:'Stuck · no gain',
+    btn:'Try a different approach', icon:'game', missed,
+    modalTitle:'Switch up the approach',
+    modalDesc:'The same reteach hasn’t moved these '+missed+' students after '+g.retaught+' tries. A different modality can break the plateau.' };
+  if (pctBelow > WHOLE_CLASS) return { kind:'whole', status:'gap', pill:'Needs reteach',
+    btn:'Reteach whole class', icon:'reteach', missed,
+    modalTitle:'Reteach the whole class',
+    modalDesc:'Most of the class ('+g.dist.below+' of '+CLASS_SIZE+') is below mastery on '+g.skill+'. A whole-class reteach fits better than a small group.' };
+  return { kind:'group', status:'gap', pill:'Needs support',
+    btn:'Reteach small group of '+missed, icon:'group', missed,
+    modalTitle:'Create a small group of '+missed,
+    modalDesc:'These '+missed+' students missed '+g.skill+' — that’s a ready-made small group.' };
+}
+function tabStatus(key){
+  const s = DATA[key];
+  if (!s.gaps.length) return 'ontrack';
+  return s.gaps.some(g => !g.stuck) ? 'gap' : 'watch';
+}
+
+/* ---------------- STATE ---------------- */
+const state = { active: 'math', watchedIntro: false };
+
+/* ---------------- RENDER: GETTING STARTED ---------------- */
+function renderGettingStarted(){
+  const el = document.getElementById('getting-started');
+  if (state.watchedIntro){ el.innerHTML = ''; return; }
+  el.innerHTML = `
+    <div class="getting-started">
+      <div class="gs-thumb" onclick="watchIntro()"><div class="play">${ICON.play}</div></div>
+      <div class="gs-body">
+        <h3>Getting Started: Crystal Instruction</h3>
+        <p>Quick start guide — how to read your dashboard and respond to student data. 3 min 28 sec.</p>
+        <div class="gs-actions">
+          <button class="btn primary" onclick="watchIntro()">${ICON.play}Watch now</button>
+          <button class="btn" onclick="watchIntro()">Mark as watched</button>
+        </div>
+      </div>
+      <span class="gs-note">Stays here until watched</span>
+    </div>`;
+}
+function watchIntro(){ state.watchedIntro = true; renderGettingStarted(); }
+
+/* ---------------- RENDER: TABS ---------------- */
+function renderTabs(){
+  document.getElementById('tabs').innerHTML = TAB_ORDER.map(key => {
+    const st = tabStatus(key);
+    return `<button class="tab ${state.active===key?'active':''}" onclick="selectSubject('${key}')">
+      <span class="sdot ${st}"></span>${DATA[key].label}</button>`;
+  }).join('');
+}
+function selectSubject(key){ state.active = key; renderTabs(); renderOverview(); renderBody(); }
+
+/* ---------------- RENDER: OVERVIEW TILES ---------------- */
+function sparkline(vals){
+  const w=76,h=26,max=Math.max(...vals),min=Math.min(...vals),rng=(max-min)||1;
+  const pts=vals.map((v,i)=>`${(i/(vals.length-1))*w},${h-((v-min)/rng)*(h-4)-2}`).join(' ');
+  const up = vals[vals.length-1] >= vals[0];
+  const col = up ? 'var(--mastered)' : 'var(--below)';
+  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+}
+function renderOverview(){
+  const o = DATA[state.active].overview;
+  document.getElementById('overview').innerHTML = `
+    <div class="ov-stat"><b>${o.mastery}%</b> class mastery ${sparkline(o.trend)}</div>
+    <div class="ov-sep"></div>
+    <div class="ov-stat"><b>${o.below}</b> below mastery</div>
+    <div class="ov-sep"></div>
+    <div class="ov-stat"><b>${o.needAction}</b> ${o.needAction===1?'lesson':'lessons'} need action</div>`;
+}
+
+/* ---------------- RENDER: SUBJECT BODY ---------------- */
+function miniDonut(d){
+  const total = d.mastered + d.approaching + d.below || 1;
+  const cx = 22, cy = 22, r = 17, sw = 6, C = 2 * Math.PI * r;
+  const segs = [['--mastered', d.mastered], ['--approaching', d.approaching], ['--below', d.below]];
+  let start = 0, arcs = '';
+  segs.forEach(([col, val]) => {
+    if (val <= 0) return;
+    const len = (val / total) * C;
+    arcs += `<circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(${col})" stroke-width="${sw}" stroke-dasharray="${len.toFixed(2)} ${(C-len).toFixed(2)}" stroke-dashoffset="${(-start).toFixed(2)}"/>`;
+    start += len;
+  });
+  return `<svg width="44" height="44" viewBox="0 0 44 44">
+    <circle cx="${cx}" cy="${cy}" r="${r}" fill="none" stroke="var(--line)" stroke-width="${sw}"/>
+    <g transform="rotate(-90 ${cx} ${cy})">${arcs}</g>
+    <text x="22" y="26" text-anchor="middle" class="mini-num">${Math.round(d.mastered/total*100)}%</text>
+  </svg>`;
+}
+function cpTag(g){
+  const delta = g.checkpoint - g.mastery;
+  if (g.checkpoint < 60) return `<span class="cp-tag never">Never landed</span>`;
+  if (delta >= 18) return `<span class="cp-tag retention">Retention gap</span>`;
+  return `<span class="cp-tag consistent">Consistent</span>`;
+}
+function toggleMore(id){
+  const el = document.getElementById('alts-' + id);
+  if (el) el.hidden = !el.hidden;
+}
+function renderBody(){
+  const s = DATA[state.active];
+  let html = '';
+
+  if (s.gaps.length){
+    const ranked = [...s.gaps].sort((a,b)=>a.mastery-b.mastery);
+    html += `<div class="sec-head"><h2>Do this next in ${s.label}</h2><span class="count">${ranked.length} ranked by mastery</span></div><div class="cards">`;
+    ranked.forEach((g,i)=>{
+      const a = deriveAction(g);
+      const gi = s.gaps.indexOf(g);
+      const cardId = `${state.active}-${gi}`;
+      const alts = (g.alts||[]).map(al=>`<button class="btn">${ICON[al.icon]||ICON.bolt}${al.label}</button>`).join('');
+      const hasAlts = (g.alts||[]).length > 0;
+      html += `<div class="card ${a.status}" data-card="${cardId}">
+        <div class="rank">${i+1}</div>
+        <div class="card-main">
+          <div class="meta-row">
+            <div class="meta-left"><span class="chip ${s.chip}">${s.label}</span>${g.className} · ${g.when}</div>
+            <span class="pill ${a.status}">${a.pill}</span>
+          </div>
+          <div class="lesson">${g.lesson}</div>
+          <div class="diagnosis">They’re missing <b>${g.skill}</b>.${g.note?' '+g.note:''}</div>
+          <div class="data-strip">
+            ${miniDonut(g.dist)}
+            <div class="ds-text"><b>${g.dist.below} of ${CLASS_SIZE}</b> below mastery<span class="ds-sep">·</span>Checkpoint <b>${g.checkpoint}%</b> → Exit <b>${g.mastery}%</b> ${cpTag(g)}</div>
+          </div>
+          <div class="next-step">
+            <div class="ns-label">${ICON.bolt}Recommended next step</div>
+            <div class="ns-row">
+              <button class="btn primary big" onclick="openModal('${state.active}',${gi})">${ICON[a.icon]}${a.btn}</button>
+              ${hasAlts?`<button class="more-toggle" onclick="toggleMore('${cardId}')">More options ${ICON.chevron}</button>`:''}
+            </div>
+            ${hasAlts?`<div class="alts" id="alts-${cardId}" hidden>${alts}</div>`:''}
+          </div>
+        </div></div>`;
+    });
+    html += `</div>`;
+  } else {
+    html += `<div class="empty"><div class="big">You're all caught up in ${s.label} ✓</div>
+      <div>Every lesson is at ${s.overview.mastery}% mastery or above. Nothing to reteach.</div>
+      ${s.next?`<div style="margin-top:16px"><button class="btn primary" style="display:inline-flex" onclick="alert('Would open: '+${JSON.stringify(s.next.lesson)})">${ICON.next}Preview next lesson: ${s.next.lesson}</button></div>`:''}</div>`;
+  }
+
+  if (s.onTrack && s.onTrack.length){
+    html += `<div class="sec-head" style="margin-top:26px"><h2>On track</h2><span class="count">${s.onTrack.length} lesson${s.onTrack.length>1?'s':''} at mastery · nothing to do</span></div>
+      <div class="ontrack-list">${s.onTrack.map(l=>`<div class="ot-row"><span><b style="font-weight:600">${l.lesson}</b><span class="ot-when">${l.className} · ${l.when}</span></span><span class="pill ontrack">${l.mastery}%</span></div>`).join('')}</div>`;
+  }
+  document.getElementById('subject-body').innerHTML = html;
+}
+
+/* ---------------- MODAL ---------------- */
+function openModal(subjectKey, gi){
+  const s = DATA[subjectKey], g = s.gaps[gi], a = deriveAction(g);
+  document.getElementById('m-eyebrow').textContent = s.label + ' · ' + g.className;
+  document.getElementById('m-title').textContent = a.modalTitle;
+  document.getElementById('m-desc').textContent = a.modalDesc;
+  const roster = document.getElementById('m-roster');
+  if ((a.kind==='group'||a.kind==='stuck') && g.missed){ roster.style.display='flex'; roster.innerHTML = g.missed.map(n=>`<span class="rchip">${n}</span>`).join(''); }
+  else { roster.style.display='none'; roster.innerHTML=''; }
+  document.getElementById('m-resource').innerHTML =
+    `<div class="ric">${ICON[g.resource.icon]||ICON.bolt}</div><div><div class="rtitle">${g.resource.title}</div><div class="rmeta">${g.resource.type} · ${g.resource.meta}</div></div>`;
+  const c = document.getElementById('m-confirm');
+  c.textContent = 'Assign';
+  c.onclick = () => confirmAction(subjectKey, gi, a);
+  document.getElementById('overlay').classList.add('open');
+}
+function closeModal(){ document.getElementById('overlay').classList.remove('open'); }
+function confirmAction(subjectKey, gi, a){
+  const card = document.querySelector(`.card[data-card="${subjectKey}-${gi}"]`);
+  if (card){
+    const btn = card.querySelector('.btn.primary');
+    let label = a.kind==='group' ? `Group of ${a.missed} assigned · due tomorrow`
+              : a.kind==='whole' ? 'Whole-class reteach assigned'
+              : 'New approach queued';
+    btn.className = 'btn done'; btn.innerHTML = ICON.check + label; btn.onclick = null;
+  }
+  closeModal();
+}
+document.getElementById('overlay').addEventListener('click', e=>{ if(e.target.id==='overlay') closeModal(); });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') closeModal(); });
+
+/* ---------------- RIGHT RAIL (support + ClearSheets) ---------------- */
+function assignHTML(a){
+  const pct = Math.round(a.done / a.total * 100);
+  const acc = a.accuracy == null
+    ? `<span class="assign-sub">no data yet</span>`
+    : `<span class="assign-acc" style="background:${a.accuracy>=75?'var(--success-bg)':a.accuracy>=60?'var(--warning-bg)':'var(--danger-bg)'};color:${a.accuracy>=75?'var(--success)':a.accuracy>=60?'var(--warning)':'var(--danger)'}">${a.accuracy}% acc</span>`;
+  return `<div class="assign-item">
+    <div class="assign-top"><span class="assign-title">${a.title}</span>${acc}</div>
+    <div class="abar"><span style="width:${pct}%"></span></div>
+    <div class="assign-meta"><span>${a.subject} · ${a.due}</span><span>${a.done}/${a.total} done</span></div>
+  </div>`;
+}
+function renderNotes(){
+  const el = document.getElementById('notes-list');
+  el.innerHTML = NOTES.length
+    ? NOTES.map((n,i)=>`<div class="note-item"><span class="ndot">${ICON.note}</span><span>${n}</span><button onclick="removeNote(${i})" aria-label="Delete note">&times;</button></div>`).join('')
+    : `<div class="notes-empty">No notes yet — jot something below.</div>`;
+}
+function addNote(){
+  const inp = document.getElementById('note-input');
+  const v = inp.value.trim();
+  if (!v) return;
+  NOTES.push(v); inp.value = ''; renderNotes();
+}
+function removeNote(i){ NOTES.splice(i,1); renderNotes(); }
+function newQuote(){ quoteIdx = (quoteIdx + 1) % QUOTES.length; document.getElementById('quote-text').textContent = QUOTES[quoteIdx]; }
+function attachTTESS(e){
+  e.preventDefault();
+  const link = document.getElementById('ttess-link');
+  link.classList.add('done');
+  link.innerHTML = `<span class="li">${ICON.check}</span>Added to your T-TESS evidence<span class="arr"></span>`;
+}
+function renderRail(){
+  document.getElementById('rail').innerHTML = `
+    <div class="rail-card quote-card">
+      <div class="qmark">&ldquo;</div>
+      <p id="quote-text">${QUOTES[quoteIdx]}</p>
+      <button class="qrefresh" onclick="newQuote()">${ICON.refresh}New one</button>
+    </div>
+    <div class="rail-card">
+      <h3>Quick notes</h3>
+      <div class="notes-list" id="notes-list"></div>
+      <input id="note-input" placeholder="Jot a note for later..." onkeydown="if(event.key==='Enter')addNote()">
+    </div>
+    <div class="rail-card">
+      <h3>Practice in flight <span class="tag">ClearSheets</span></h3>
+      ${ASSIGNMENTS.map(assignHTML).join('')}
+      <a class="rail-link" href="#"><span class="li">${ICON.sheet}</span>Open Clear Monitor<span class="arr">${ICON.chevron}</span></a>
+    </div>
+    <div class="rail-card">
+      <h3>Support</h3>
+      <a class="rail-link" id="ttess-link" href="#" onclick="attachTTESS(event)"><span class="li">${ICON.badge}</span>Attach today’s response to T-TESS<span class="arr">${ICON.chevron}</span></a>
+      <a class="rail-link" href="#"><span class="li">${ICON.book}</span>ClearK12 PD site<span class="arr">${ICON.external}</span></a>
+      <a class="rail-link" href="#"><span class="li">${ICON.bulb}</span>Help center<span class="arr">${ICON.external}</span></a>
+    </div>`;
+  renderNotes();
+}
+
+/* ---------------- INIT ---------------- */
+renderGettingStarted(); renderTabs(); renderOverview(); renderBody(); renderRail();
+</script>
+</body>
+</html>
